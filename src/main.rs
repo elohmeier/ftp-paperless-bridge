@@ -1,5 +1,6 @@
 use std::env;
 use std::fmt::Debug;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +22,25 @@ use paperless_ngx_api::client::{PaperlessNgxClient, PaperlessNgxClientBuilder};
 use tokio::io::AsyncSeekExt;
 use tokio::time::{Instant, sleep};
 
+fn parse_port_range(src: &str) -> Result<RangeInclusive<u16>, String> {
+    let parts: Vec<_> = src.split("-").collect();
+
+    if parts.len() != 2 {
+        return Err("Wrong format for port range, should be in the format 2222-3333".to_string());
+    }
+
+    let range_start: u16 = parts[0]
+        .parse()
+        .map_err(|_| "First number of port range can't be parsed")?;
+    let range_end: u16 = parts[1]
+        .parse()
+        .map_err(|_| "Second number of port range can't be parsed")?;
+
+    Ok(range_start..=range_end)
+}
+
+/// The FTP server part enables both active mode and passive mode at the same time for better
+/// flexibility.
 #[derive(Parser)]
 #[command(name = "ftp-paperless-bridge", author, about, version)]
 pub struct CliArgs {
@@ -33,6 +53,12 @@ pub struct CliArgs {
     /// e.g. 0.0.0.0:2121
     #[arg(short, long, env = "FTP_PAPERLESS_BRIDGE_LISTEN")]
     pub listen: String,
+
+    /// Passive mode port range
+    ///
+    /// e.g. 2122-2124
+    #[arg(long, env = "FTP_PAPERLESS_BRIDGE_PASSIVE_MODE_PORTS", value_parser = parse_port_range)]
+    pub passive_mode_ports: RangeInclusive<u16>,
 
     /// FTP username
     #[arg(short, long, env = "FTP_PAPERLESS_BRIDGE_USERNAME")]
@@ -323,10 +349,15 @@ pub async fn main() -> Result<()> {
 
     let paperless_storage = Box::new(move || PaperlessStorage::new(Arc::clone(&paperless_client)));
 
-    info!("Starting FTP server at {}", args.listen);
+    info!(
+        "Starting FTP server at {} with passive port range {}-{}",
+        args.listen,
+        args.passive_mode_ports.start(),
+        args.passive_mode_ports.end()
+    );
     let ftp_server = libunftp::ServerBuilder::with_authenticator(paperless_storage, authenticator)
         .greeting("ftp-paperless-bridge")
-        .active_passive_mode(ActivePassiveMode::ActiveOnly)
+        .active_passive_mode(ActivePassiveMode::ActiveAndPassive)
         .build()?;
     ftp_server.listen(args.listen).await?;
 
