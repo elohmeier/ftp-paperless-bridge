@@ -293,10 +293,11 @@ impl Authenticator<User> for UsernamePasswordAuthenticator {
         creds: &Credentials,
     ) -> Result<User, AuthenticationError> {
         if let Some(ref password) = creds.password
-            && *password != self.password {
-                warn!("Provided password doesn't match");
-                return Err(AuthenticationError::BadPassword);
-            }
+            && *password != self.password
+        {
+            warn!("Provided password doesn't match");
+            return Err(AuthenticationError::BadPassword);
+        }
         if username != self.username {
             warn!("Provided username doesn't match");
             return Err(AuthenticationError::BadUser);
