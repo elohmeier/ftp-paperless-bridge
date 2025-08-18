@@ -358,6 +358,7 @@ pub async fn main() -> Result<()> {
     let ftp_server = libunftp::ServerBuilder::with_authenticator(paperless_storage, authenticator)
         .greeting("ftp-paperless-bridge")
         .active_passive_mode(ActivePassiveMode::ActiveAndPassive)
+        .passive_ports(args.passive_mode_ports)
         .build()?;
     ftp_server.listen(args.listen).await?;
 

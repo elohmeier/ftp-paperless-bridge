@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 <!-- next-header -->
 
 ## [Unreleased] - ReleaseDate
+- Actually make use of the set passive mode ports
 
 ## [0.2.0] - 2025-08-18
 - Enable passive mode in addition to active mode
