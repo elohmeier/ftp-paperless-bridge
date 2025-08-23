@@ -333,14 +333,12 @@ pub async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    // Verify our config works by fetching some docs.
     let paperless_client = Arc::new(
         PaperlessNgxClientBuilder::default()
             .set_url(&args.paperless_url)
             .set_auth_token(&args.paperless_api_token)
             .build()?,
     );
-    paperless_client.documents(None).await?;
 
     let authenticator = Arc::new(UsernamePasswordAuthenticator::new(
         args.username,
