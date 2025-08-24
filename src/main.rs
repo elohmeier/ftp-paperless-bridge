@@ -206,12 +206,24 @@ impl StorageBackend<User> for PaperlessStorage {
         let now = Instant::now();
         loop {
             sleep(Duration::from_secs(1)).await;
-            let task_status = task.status().await.unwrap();
+
+            let task_status = match task.status().await {
+                Ok(status) => status,
+                Err(e) => {
+                    warn!("Failed to get task status: {e}");
+                    // If we can't get the status, wait a bit and try again
+                    if now.elapsed() > Duration::from_secs(10) {
+                        error!("Timeout getting upload status: {e}");
+                        break;
+                    }
+                    continue;
+                }
+            };
 
             debug!("Task status: {task_status:#?}");
 
-            if task_status.status == "STARTED" {
-                info!("File uploaded Successfully");
+            if task_status.status == "STARTED" || task_status.status == "SUCCESS" {
+                info!("File uploaded successfully");
                 break;
             }
 
