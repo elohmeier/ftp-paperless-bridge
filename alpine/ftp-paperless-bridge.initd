@@ -1,0 +1,40 @@
+#!/sbin/openrc-run
+
+name="ftp-paperless-bridge"
+description="FTP to Paperless-ngx bridge service"
+command="/usr/bin/ftp-paperless-bridge"
+command_user="paperless:paperless"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.err"
+
+# Export all environment variables from conf.d file
+set -a
+[ -f /etc/conf.d/${RC_SVCNAME} ] && . /etc/conf.d/${RC_SVCNAME}
+set +a
+
+depend() {
+	need net
+	after firewall
+}
+
+start_pre() {
+	checkpath -f -o "$command_user" "$output_log" "$error_log"
+
+	# Check configuration
+	if [ -z "$FTP_PAPERLESS_BRIDGE_LISTEN" ]; then
+		eerror "FTP_PAPERLESS_BRIDGE_LISTEN not set in /etc/conf.d/$RC_SVCNAME"
+		return 1
+	fi
+
+	if [ -z "$FTP_PAPERLESS_BRIDGE_PAPERLESS_URL" ]; then
+		eerror "FTP_PAPERLESS_BRIDGE_PAPERLESS_URL not set in /etc/conf.d/$RC_SVCNAME"
+		return 1
+	fi
+
+	if [ -z "$FTP_PAPERLESS_BRIDGE_PAPERLESS_API_TOKEN" ]; then
+		eerror "FTP_PAPERLESS_BRIDGE_PAPERLESS_API_TOKEN not set in /etc/conf.d/$RC_SVCNAME"
+		return 1
+	fi
+}

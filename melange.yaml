@@ -1,0 +1,84 @@
+package:
+  name: ftp-paperless-bridge
+  version: 0.2.1
+  epoch: 0
+  description: "Present a FTP server to your network-enabled document scanner and forward anything received to paperless-ngx"
+  copyright:
+    - license: Apache-2.0
+  scriptlets:
+    pre-install: |
+      #!/bin/sh
+      addgroup -S paperless 2>/dev/null || true
+      adduser -S -D -H -h /nonexistent -s /sbin/nologin -G paperless -g paperless paperless 2>/dev/null || true
+      exit 0
+    post-install: |
+      #!/bin/sh
+      # Create log directory and set permissions
+      mkdir -p /var/log
+      touch /var/log/ftp-paperless-bridge.log /var/log/ftp-paperless-bridge.err
+      chown paperless:paperless /var/log/ftp-paperless-bridge.log /var/log/ftp-paperless-bridge.err
+
+      # Note to user about configuration
+      echo "Please configure the service by editing /etc/conf.d/ftp-paperless-bridge"
+      echo "Then enable the service with: rc-update add ftp-paperless-bridge default"
+      echo "And start it with: rc-service ftp-paperless-bridge start"
+      exit 0
+
+environment:
+  contents:
+    repositories:
+      - https://dl-cdn.alpinelinux.org/alpine/edge/main
+      - https://dl-cdn.alpinelinux.org/alpine/edge/community
+    packages:
+      - alpine-baselayout-data
+      - build-base
+      - busybox
+      - ca-certificates-bundle
+      - cargo-auditable
+      - openssl-dev
+      - rust
+  environment:
+    CARGO_HOME: '/var/cache/melange'
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL: 'sparse'
+
+pipeline:
+  # Pre-fetch dependencies to leverage cache
+  - runs: |
+      export CARGO_HOME=/var/cache/melange
+      cargo fetch --locked || cargo fetch
+
+  # Build with custom command for better cache control
+  - runs: |
+      export CARGO_HOME=/var/cache/melange
+      export CARGO_TARGET_DIR=/var/cache/melange/target
+
+      # Build with cargo-auditable for security
+      cargo auditable build --release --locked --target-dir /var/cache/melange/target
+
+      # Install the binary
+      install -Dm755 /var/cache/melange/target/release/${{package.name}} \
+        "${{targets.destdir}}/usr/bin/${{package.name}}"
+
+  - uses: strip
+
+  # Install OpenRC init script
+  - runs: |
+      mkdir -p "${{targets.destdir}}"/etc/init.d
+      install -Dm755 alpine/ftp-paperless-bridge.initd "${{targets.destdir}}"/etc/init.d/ftp-paperless-bridge
+
+  # Install configuration file
+  - runs: |
+      mkdir -p "${{targets.destdir}}"/etc/conf.d
+      install -Dm644 alpine/ftp-paperless-bridge.confd "${{targets.destdir}}"/etc/conf.d/ftp-paperless-bridge
+
+  # Install example env file as documentation
+  - runs: |
+      mkdir -p "${{targets.destdir}}"/usr/share/doc/${{package.name}}
+      if [ -f .env.example ]; then
+        install -Dm644 .env.example "${{targets.destdir}}"/usr/share/doc/${{package.name}}/config.env.example
+      fi
+
+test:
+  pipeline:
+    - runs: |
+        ftp-paperless-bridge --version

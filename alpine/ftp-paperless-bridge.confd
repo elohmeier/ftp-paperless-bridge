@@ -1,0 +1,14 @@
+# Configuration for ftp-paperless-bridge
+
+# FTP Server Settings
+FTP_PAPERLESS_BRIDGE_LISTEN="0.0.0.0:2121"
+FTP_PAPERLESS_BRIDGE_PASSIVE_MODE_PORTS="2122-2124"
+FTP_PAPERLESS_BRIDGE_USERNAME="scanner"
+FTP_PAPERLESS_BRIDGE_PASSWORD="changeme"
+
+# Paperless-ngx Settings
+FTP_PAPERLESS_BRIDGE_PAPERLESS_URL="https://paperless.example.com"
+FTP_PAPERLESS_BRIDGE_PAPERLESS_API_TOKEN="your-api-token-here"
+
+# Optional: Enable verbose logging
+#FTP_PAPERLESS_BRIDGE_VERBOSE="true"
