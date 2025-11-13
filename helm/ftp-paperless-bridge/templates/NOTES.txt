@@ -1,0 +1,93 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Your release is named {{ .Release.Name }}.
+
+{{- if .Values.networking.hostNetwork }}
+
+=== HOST NETWORK MODE ===
+The FTP server is running with hostNetwork enabled and will bind directly to the node's IP address.
+
+FTP Control Port: 2121
+{{- if .Values.config.passiveModePorts }}
+Passive Mode Ports: {{ .Values.config.passiveModePorts }}
+{{- end }}
+
+To connect to the FTP server:
+  Host: <NODE_IP>
+  Port: 2121
+  Username: {{ .Values.config.username }}
+  Password: <configured password>
+
+Note: When using hostNetwork, the pod will use the node's network namespace.
+Make sure no other service is using these ports on the node.
+
+{{- else }}
+
+=== SERVICE NETWORK MODE ===
+The FTP server is exposed via Kubernetes Service.
+
+{{- if eq .Values.service.type "NodePort" }}
+
+FTP Control Port: {{ .Values.service.nodePort }} (NodePort)
+{{- if .Values.service.passivePorts.enabled }}
+Passive Mode Ports: {{ .Values.service.passivePorts.start }}-{{ .Values.service.passivePorts.end }} (NodePorts)
+{{- end }}
+
+To connect to the FTP server:
+  Host: <NODE_IP>
+  Port: {{ .Values.service.nodePort }}
+  Username: {{ .Values.config.username }}
+  Password: <configured password>
+
+Get the Node IP:
+  kubectl get nodes -o wide
+
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+To get the external IP for the FTP server:
+  kubectl get service {{ include "ftp-paperless-bridge.fullname" . }} -n {{ .Release.Namespace }}
+
+Wait for the EXTERNAL-IP to be assigned, then connect using:
+  Host: <EXTERNAL-IP>
+  Port: {{ .Values.service.port }}
+  Username: {{ .Values.config.username }}
+  Password: <configured password>
+
+{{- else }}
+
+The service is configured as ClusterIP (internal only).
+For FTP with passive mode, consider using NodePort or LoadBalancer service type,
+or enable hostNetwork mode.
+
+{{- end }}
+{{- end }}
+
+=== IMPORTANT NOTES ===
+
+1. FTP Passive Mode:
+   {{- if .Values.config.passiveModePorts }}
+   - Passive mode is enabled with ports: {{ .Values.config.passiveModePorts }}
+   {{- if and (not .Values.networking.hostNetwork) .Values.service.passivePorts.enabled }}
+   - NodePorts {{ .Values.service.passivePorts.start }}-{{ .Values.service.passivePorts.end }} are mapped to container ports
+   {{- end }}
+   {{- else }}
+   - Passive mode ports not configured (FTP_PAPERLESS_BRIDGE_PASSIVE_MODE_PORTS)
+   - Active mode FTP will be used
+   {{- end }}
+
+2. Scanner Configuration:
+   - Configure your network scanner to connect to the FTP server
+   - Use the credentials shown above
+   - Scanned documents will be automatically uploaded to Paperless-ngx
+
+3. Network Scanner Compatibility:
+   - Most scanners work best with passive mode FTP
+   - If you experience connection issues, ensure passive ports are accessible
+
+4. Check the deployment status:
+   kubectl get pods -l app.kubernetes.io/name={{ include "ftp-paperless-bridge.name" . }} -n {{ .Release.Namespace }}
+
+5. View logs:
+   kubectl logs -l app.kubernetes.io/name={{ include "ftp-paperless-bridge.name" . }} -n {{ .Release.Namespace }}
+
+For more information, visit: https://github.com/svenstaro/ftp-paperless-bridge

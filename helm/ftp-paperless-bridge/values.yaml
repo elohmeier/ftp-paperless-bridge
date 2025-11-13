@@ -1,0 +1,98 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/svenstaro/ftp-paperless-bridge
+  pullPolicy: IfNotPresent
+  tag: ""  # Overrides the image tag whose default is the chart appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+# Update strategy for deployment
+# Using Recreate to avoid port conflicts on single-node clusters
+# or when using hostNetwork mode
+updateStrategy:
+  type: Recreate
+
+# Network configuration for FTP passive mode support
+# For FTP with passive mode, you need either hostNetwork or NodePort with port ranges
+networking:
+  # Use host network (recommended for FTP passive mode)
+  # This allows the pod to bind directly to the host's network interface
+  hostNetwork: false
+
+  # DNS policy when using hostNetwork (ClusterFirstWithHostNet or Default)
+  dnsPolicy: ClusterFirst
+
+service:
+  # Service type: ClusterIP, NodePort, or LoadBalancer
+  # For FTP with passive mode, NodePort or LoadBalancer is recommended
+  type: NodePort
+
+  # FTP control port
+  port: 2121
+  nodePort: 30021  # NodePort for FTP control connection (30000-32767)
+
+  annotations: {}
+
+  # Passive mode port range configuration
+  # Only used when hostNetwork is false and service.type is NodePort
+  passivePorts:
+    enabled: true
+    # Range of NodePorts for passive mode data connections
+    # Must match config.passiveModePorts range size
+    start: 30100
+    end: 30110
+
+resources: {}
+
+livenessProbe:
+  enabled: false
+
+readinessProbe:
+  enabled: false
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# FTP Paperless Bridge Configuration
+config:
+  # FTP server listen address (format: "0.0.0.0:2121")
+  listen: "0.0.0.0:2121"
+
+  # Passive mode port range (format: "50000-51000")
+  # When using hostNetwork: use host ports (e.g., "50000-50010")
+  # When using NodePort: use container ports that map to service.passivePorts (e.g., "50000-50010")
+  passiveModePorts: "50000-50010"
+
+  # FTP username for authentication
+  username: "scanner"
+
+  # FTP password for authentication
+  password: "changeme"
+
+  # Paperless-ngx instance URL
+  paperlessUrl: "http://paperless:8000"
+
+  # Paperless-ngx API token
+  paperlessApiToken: ""
+
+# Use existing secret for sensitive values
+existingSecret: ""

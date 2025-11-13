@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ftp-paperless-bridge.fullname" . }}
+  labels:
+    {{- include "ftp-paperless-bridge.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  {{- if .Values.updateStrategy }}
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ftp-paperless-bridge.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "ftp-paperless-bridge.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "ftp-paperless-bridge.serviceAccountName" . }}
+      {{- if .Values.networking.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: {{ .Values.networking.dnsPolicy }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: {{ .Chart.Name }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+        - name: FTP_PAPERLESS_BRIDGE_LISTEN
+          value: {{ .Values.config.listen | quote }}
+        {{- if .Values.config.passiveModePorts }}
+        - name: FTP_PAPERLESS_BRIDGE_PASSIVE_MODE_PORTS
+          value: {{ .Values.config.passiveModePorts | quote }}
+        {{- end }}
+        - name: FTP_PAPERLESS_BRIDGE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "ftp-paperless-bridge.secretName" . }}
+              key: username
+        - name: FTP_PAPERLESS_BRIDGE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "ftp-paperless-bridge.secretName" . }}
+              key: password
+        - name: FTP_PAPERLESS_BRIDGE_PAPERLESS_URL
+          value: {{ .Values.config.paperlessUrl | quote }}
+        - name: FTP_PAPERLESS_BRIDGE_PAPERLESS_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "ftp-paperless-bridge.secretName" . }}
+              key: paperlessApiToken
+        ports:
+        - name: ftp
+          containerPort: 2121
+          protocol: TCP
+        {{- if and .Values.service.passivePorts.enabled (not .Values.networking.hostNetwork) }}
+        {{- range untilStep (int .Values.service.passivePorts.start) (int (add1 .Values.service.passivePorts.end)) 1 }}
+        - name: pasv-{{ . }}
+          containerPort: {{ add 50000 (sub . $.Values.service.passivePorts.start) }}
+          protocol: TCP
+        {{- end }}
+        {{- end }}
+        {{- if .Values.livenessProbe.enabled }}
+        livenessProbe:
+          tcpSocket:
+            port: ftp
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        {{- end }}
+        {{- if .Values.readinessProbe.enabled }}
+        readinessProbe:
+          tcpSocket:
+            port: ftp
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        {{- end }}
+        resources:
+          {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

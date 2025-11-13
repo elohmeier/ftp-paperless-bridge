@@ -1,0 +1,35 @@
+{{- if not .Values.networking.hostNetwork }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ftp-paperless-bridge.fullname" . }}
+  labels:
+    {{- include "ftp-paperless-bridge.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - port: {{ .Values.service.port }}
+    targetPort: ftp
+    protocol: TCP
+    name: ftp
+    {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
+    nodePort: {{ .Values.service.nodePort }}
+    {{- end }}
+  {{- if .Values.service.passivePorts.enabled }}
+  {{- range untilStep (int .Values.service.passivePorts.start) (int (add1 .Values.service.passivePorts.end)) 1 }}
+  - port: {{ add 50000 (sub . $.Values.service.passivePorts.start) }}
+    targetPort: {{ add 50000 (sub . $.Values.service.passivePorts.start) }}
+    protocol: TCP
+    name: pasv-{{ . }}
+    {{- if eq $.Values.service.type "NodePort" }}
+    nodePort: {{ . }}
+    {{- end }}
+  {{- end }}
+  {{- end }}
+  selector:
+    {{- include "ftp-paperless-bridge.selectorLabels" . | nindent 4 }}
+{{- end }}

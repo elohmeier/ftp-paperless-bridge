@@ -1,0 +1,11 @@
+apiVersion: v2
+name: ftp-paperless-bridge
+description: A Helm chart for ftp-paperless-bridge - FTP server that bridges to Paperless-ngx
+type: application
+version: 0.1.0
+appVersion: "0.1.4"
+home: https://github.com/svenstaro/ftp-paperless-bridge
+sources:
+  - https://github.com/svenstaro/ftp-paperless-bridge
+maintainers:
+  - name: svenstaro
