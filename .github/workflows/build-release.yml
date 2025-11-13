@@ -129,8 +129,8 @@ jobs:
         run: podman build --format docker --platform linux/amd64 --manifest ftp-paperless-bridge -f Containerfile target/x86_64-unknown-linux-gnu/release
 
       - name: podman manifest push latest
-        run: podman manifest push ftp-paperless-bridge ghcr.io/svenstaro/ftp-paperless-bridge:latest
+        run: podman manifest push ftp-paperless-bridge ghcr.io/${{ github.repository_owner }}/ftp-paperless-bridge:latest
 
       - name: podman manifest push tag version
-        run: podman manifest push ftp-paperless-bridge ghcr.io/svenstaro/ftp-paperless-bridge:${{ needs.publish.outputs.version }}
+        run: podman manifest push ftp-paperless-bridge ghcr.io/${{ github.repository_owner }}/ftp-paperless-bridge:${{ needs.publish.outputs.version }}
         if: startsWith(github.ref_name, 'v')
