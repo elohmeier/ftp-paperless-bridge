@@ -384,7 +384,31 @@ pub async fn main() -> Result<()> {
         .active_passive_mode(ActivePassiveMode::ActiveAndPassive)
         .passive_ports(args.passive_mode_ports)
         .build()?;
-    ftp_server.listen(args.listen).await?;
 
+    // Set up graceful shutdown handling
+    let server_handle = tokio::spawn(async move {
+        if let Err(e) = ftp_server.listen(args.listen).await {
+            error!("FTP server error: {}", e);
+        }
+    });
+
+    // Wait for shutdown signal
+    tokio::select! {
+        _ = server_handle => {
+            info!("FTP server stopped");
+        }
+        _ = tokio::signal::ctrl_c() => {
+            info!("Received SIGINT (Ctrl+C), shutting down gracefully...");
+        }
+        _ = async {
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("Failed to install SIGTERM handler");
+            sigterm.recv().await
+        } => {
+            info!("Received SIGTERM, shutting down gracefully...");
+        }
+    }
+
+    info!("Shutdown complete");
     Ok(())
 }
