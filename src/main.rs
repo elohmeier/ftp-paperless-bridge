@@ -39,6 +39,18 @@ fn parse_port_range(src: &str) -> Result<RangeInclusive<u16>, String> {
     Ok(range_start..=range_end)
 }
 
+fn validate_listen_addr(addr: &str) -> Result<String, String> {
+    // Try to parse as SocketAddr to validate format
+    if addr.parse::<std::net::SocketAddr>().is_ok() {
+        Ok(addr.to_string())
+    } else {
+        Err(format!(
+            "Invalid listen address '{}'. Must be in format IP:PORT (e.g., 0.0.0.0:2121 or [::]:2121)",
+            addr
+        ))
+    }
+}
+
 /// The FTP server part enables both active mode and passive mode at the same time for better
 /// flexibility.
 #[derive(Parser)]
@@ -48,10 +60,10 @@ pub struct CliArgs {
     #[arg(short, long, env = "FTP_PAPERLESS_BRIDGE_VERBOSE")]
     pub verbose: bool,
 
-    /// Listen address
+    /// Listen address (must include both IP and port)
     ///
-    /// e.g. 0.0.0.0:2121
-    #[arg(short, long, env = "FTP_PAPERLESS_BRIDGE_LISTEN")]
+    /// Examples: 0.0.0.0:2121, 127.0.0.1:2121, [::]:2121
+    #[arg(short, long, env = "FTP_PAPERLESS_BRIDGE_LISTEN", value_parser = validate_listen_addr)]
     pub listen: String,
 
     /// Passive mode port range
@@ -100,31 +112,31 @@ struct Meta;
 
 impl Metadata for Meta {
     fn len(&self) -> u64 {
-        todo!()
+        0
     }
 
     fn is_dir(&self) -> bool {
-        todo!()
+        true
     }
 
     fn is_file(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_symlink(&self) -> bool {
-        todo!()
+        false
     }
 
     fn modified(&self) -> StorageResult<std::time::SystemTime> {
-        todo!()
+        Ok(std::time::SystemTime::now())
     }
 
     fn gid(&self) -> u32 {
-        todo!()
+        0
     }
 
     fn uid(&self) -> u32 {
-        todo!()
+        0
     }
 }
 
@@ -135,20 +147,24 @@ impl StorageBackend<User> for PaperlessStorage {
     async fn metadata<P: AsRef<Path> + Send + Debug>(
         &self,
         _user: &User,
-        _path: P,
+        path: P,
     ) -> StorageResult<Self::Metadata> {
-        unimplemented!()
+        debug!("METADATA called for path: {:?}", path.as_ref());
+        // Return a basic metadata implementation for the root directory
+        Ok(Meta)
     }
 
     async fn list<P: AsRef<Path> + Send + Debug>(
         &self,
         _user: &User,
-        _path: P,
+        path: P,
     ) -> StorageResult<Vec<Fileinfo<PathBuf, Self::Metadata>>>
     where
         <Self as StorageBackend<User>>::Metadata: Metadata,
     {
-        unimplemented!()
+        debug!("LIST called for path: {:?}", path.as_ref());
+        // Return an empty directory listing since this is an upload-only bridge
+        Ok(vec![])
     }
 
     async fn get<P: AsRef<Path> + Send + Debug>(
@@ -275,12 +291,10 @@ impl StorageBackend<User> for PaperlessStorage {
         unimplemented!()
     }
 
-    async fn cwd<P: AsRef<Path> + Send + Debug>(
-        &self,
-        _user: &User,
-        _path: P,
-    ) -> StorageResult<()> {
-        unimplemented!()
+    async fn cwd<P: AsRef<Path> + Send + Debug>(&self, _user: &User, path: P) -> StorageResult<()> {
+        debug!("CWD called for path: {:?}", path.as_ref());
+        // Always succeed for directory changes since we don't have a real filesystem
+        Ok(())
     }
 }
 
