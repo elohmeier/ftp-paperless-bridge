@@ -18,7 +18,8 @@ use libunftp::{
     },
 };
 use log::{debug, error, info, warn};
-use paperless_ngx_api::client::{PaperlessNgxClient, PaperlessNgxClientBuilder};
+use reqwest::{Client, multipart};
+use serde::Deserialize;
 use tokio::io::AsyncSeekExt;
 use tokio::time::{Instant, sleep};
 
@@ -91,8 +92,105 @@ pub struct CliArgs {
     pub paperless_api_token: String,
 }
 
+#[derive(Debug)]
+enum PaperlessError {
+    Reqwest(reqwest::Error),
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for PaperlessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PaperlessError::Reqwest(e) => write!(f, "{e}"),
+            PaperlessError::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for PaperlessError {}
+
+impl From<reqwest::Error> for PaperlessError {
+    fn from(e: reqwest::Error) -> Self {
+        PaperlessError::Reqwest(e)
+    }
+}
+
+impl From<std::io::Error> for PaperlessError {
+    fn from(e: std::io::Error) -> Self {
+        PaperlessError::Io(e)
+    }
+}
+
+#[derive(Clone)]
+struct PaperlessClient {
+    base_url: String,
+    token: String,
+    client: Client,
+}
+
+#[derive(Deserialize, Debug)]
+struct TaskStatus {
+    pub status: String,
+}
+
+impl PaperlessClient {
+    fn new(base_url: &str, token: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            token: token.to_string(),
+            client: Client::new(),
+        }
+    }
+
+    /// Validate API token by hitting /api/ui_settings/
+    async fn health_check(&self) -> Result<(), PaperlessError> {
+        self.client
+            .get(format!("{}/api/ui_settings/", self.base_url))
+            .header("Authorization", format!("Token {}", self.token))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Upload document, returns task UUID
+    async fn upload(&self, path: &str) -> Result<String, PaperlessError> {
+        info!("Uploading {path:?}");
+        let form = multipart::Form::new().file("document", path).await?;
+
+        let resp = self
+            .client
+            .post(format!("{}/api/documents/post_document/", self.base_url))
+            .header("Authorization", format!("Token {}", self.token))
+            .multipart(form)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let uuid = resp.text().await?;
+        Ok(uuid.trim_matches('"').to_string())
+    }
+
+    /// Poll task status
+    async fn task_status(&self, task_id: &str) -> Result<TaskStatus, PaperlessError> {
+        let resp: Vec<TaskStatus> = self
+            .client
+            .get(format!("{}/api/tasks/?task_id={}", self.base_url, task_id))
+            .header("Authorization", format!("Token {}", self.token))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        Ok(resp.into_iter().next().unwrap_or(TaskStatus {
+            status: "PENDING".to_string(),
+        }))
+    }
+}
+
 struct PaperlessStorage {
-    paperless_client: Arc<PaperlessNgxClient>,
+    paperless_client: Arc<PaperlessClient>,
 }
 
 impl std::fmt::Debug for PaperlessStorage {
@@ -102,7 +200,7 @@ impl std::fmt::Debug for PaperlessStorage {
 }
 
 impl PaperlessStorage {
-    pub fn new(paperless_client: Arc<PaperlessNgxClient>) -> Self {
+    pub fn new(paperless_client: Arc<PaperlessClient>) -> Self {
         Self { paperless_client }
     }
 }
@@ -210,11 +308,11 @@ impl StorageBackend<User> for PaperlessStorage {
 
         // Now we'll upload the file.
         //
-        // The upload returns immediately and gives us a Task that we'll have to poll.
-        let task = match self.paperless_client.upload(&path).await {
-            Ok(task) => task,
+        // The upload returns immediately and gives us a task UUID that we'll have to poll.
+        let task_id = match self.paperless_client.upload(&path).await {
+            Ok(id) => id,
             Err(e) => {
-                error!("{e}");
+                error!("Upload failed: {e}");
                 return Err(StorageError::new(LocalError, e));
             }
         };
@@ -223,35 +321,41 @@ impl StorageBackend<User> for PaperlessStorage {
         loop {
             sleep(Duration::from_secs(1)).await;
 
-            let task_status = match task.status().await {
-                Ok(status) => status,
+            let status = match self.paperless_client.task_status(&task_id).await {
+                Ok(s) => s,
                 Err(e) => {
                     warn!("Failed to get task status: {e}");
-                    // If we can't get the status, wait a bit and try again
                     if now.elapsed() > Duration::from_secs(10) {
                         error!("Timeout getting upload status: {e}");
-                        break;
+                        return Err(StorageError::new(LocalError, e));
                     }
                     continue;
                 }
             };
 
-            debug!("Task status: {task_status:#?}");
+            debug!("Task status: {status:?}");
 
-            if task_status.status == "STARTED" || task_status.status == "SUCCESS" {
-                info!("File uploaded successfully");
-                break;
+            match status.status.as_str() {
+                "SUCCESS" => {
+                    info!("File uploaded successfully");
+                    break;
+                }
+                "FAILURE" | "REVOKED" => {
+                    error!("Upload failed: {}", status.status);
+                    return Err(StorageError::new(
+                        LocalError,
+                        std::io::Error::other("Upload task failed"),
+                    ));
+                }
+                _ => {} // PENDING, STARTED - continue polling
             }
 
-            if task_status.status == "FAILURE" || task_status.status == "REVOKED" {
-                error!("Upload failed");
-                break;
-            }
-
-            // Wait a maximum of 10 seconds.
             if now.elapsed() > Duration::from_secs(10) {
-                error!("Timeout during upload");
-                break;
+                error!("Timeout waiting for upload");
+                return Err(StorageError::new(
+                    LocalError,
+                    std::io::Error::new(std::io::ErrorKind::TimedOut, "Upload timeout"),
+                ));
             }
         }
 
@@ -359,12 +463,18 @@ pub async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    let paperless_client = Arc::new(
-        PaperlessNgxClientBuilder::default()
-            .set_url(&args.paperless_url)
-            .set_auth_token(&args.paperless_api_token)
-            .build()?,
-    );
+    let paperless_client = Arc::new(PaperlessClient::new(
+        &args.paperless_url,
+        &args.paperless_api_token,
+    ));
+
+    // Validate API connection at startup
+    info!("Validating Paperless API connection...");
+    if let Err(e) = paperless_client.health_check().await {
+        error!("Failed to connect to Paperless API: {e}");
+        return Err(e.into());
+    }
+    info!("Paperless API connection validated");
 
     let authenticator = Arc::new(UsernamePasswordAuthenticator::new(
         args.username,

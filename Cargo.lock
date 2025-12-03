@@ -612,7 +612,8 @@ dependencies = [
  "env_logger",
  "libunftp",
  "log",
- "paperless_ngx_api",
+ "reqwest",
+ "serde",
  "tokio",
 ]
 
@@ -1399,18 +1400,6 @@ name = "owo-colors"
 version = "4.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48dd4f4a2c8405440fd0462561f0e5806bd0f77e86f51c761481bdd4018b545e"
-
-[[package]]
-name = "paperless_ngx_api"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a09baeb995ce5e50c785574961ae8d5bf0eac7db7d25ff6ade68cc6960eb3cf"
-dependencies = [
- "log",
- "reqwest",
- "serde",
- "thiserror 2.0.15",
-]
 
 [[package]]
 name = "parking_lot"
