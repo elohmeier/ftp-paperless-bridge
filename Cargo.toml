@@ -3,7 +3,7 @@ name = "ftp-paperless-bridge"
 description = "Present a FTP server to your network-enabled document scanner and forward anything received to paperless-ngx"
 license = "Apache-2.0"
 repository = "https://github.com/svenstaro/ftp-paperless-bridge"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -17,3 +17,6 @@ log = "0.4.27"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart", "json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.45.1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+
+[dev-dependencies]
+tempfile = "3"
