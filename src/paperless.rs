@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use log::info;
 use reqwest::{Client, multipart};
-use serde::Deserialize;
 
 #[derive(Debug)]
 pub enum PaperlessError {
@@ -32,16 +31,10 @@ impl From<std::io::Error> for PaperlessError {
     }
 }
 
-#[derive(Deserialize, Debug)]
-pub struct TaskStatus {
-    pub status: String,
-}
-
 #[async_trait]
 pub trait PaperlessApi: Send + Sync {
     async fn health_check(&self) -> Result<(), PaperlessError>;
     async fn upload(&self, path: &str) -> Result<String, PaperlessError>;
-    async fn task_status(&self, task_id: &str) -> Result<TaskStatus, PaperlessError>;
 }
 
 #[derive(Clone)]
@@ -90,19 +83,4 @@ impl PaperlessApi for PaperlessClient {
         Ok(uuid.trim_matches('"').to_string())
     }
 
-    async fn task_status(&self, task_id: &str) -> Result<TaskStatus, PaperlessError> {
-        let resp: Vec<TaskStatus> = self
-            .client
-            .get(format!("{}/api/tasks/?task_id={}", self.base_url, task_id))
-            .header("Authorization", format!("Token {}", self.token))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-
-        Ok(resp.into_iter().next().unwrap_or(TaskStatus {
-            status: "PENDING".to_string(),
-        }))
-    }
 }

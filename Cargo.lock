@@ -619,7 +619,6 @@ dependencies = [
  "libunftp",
  "log",
  "reqwest",
- "serde",
  "tempfile",
  "tokio",
 ]

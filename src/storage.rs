@@ -11,7 +11,7 @@ use libunftp::storage::{
 };
 use log::{debug, error, info, warn};
 use tokio::io::AsyncSeekExt;
-use tokio::time::{Instant, sleep};
+use tokio::time::sleep;
 
 use crate::auth::User;
 use crate::paperless::PaperlessApi;
@@ -42,47 +42,6 @@ impl PaperlessStorage {
         Self {
             paperless_client,
             spool_dir: Some(spool_dir),
-        }
-    }
-
-    async fn wait_for_task(&self, task_id: &str) -> Result<(), crate::paperless::PaperlessError> {
-        let now = Instant::now();
-        loop {
-            sleep(Duration::from_secs(1)).await;
-
-            let status = match self.paperless_client.task_status(task_id).await {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("Failed to get task status: {e}");
-                    if now.elapsed() > Duration::from_secs(10) {
-                        return Err(e);
-                    }
-                    continue;
-                }
-            };
-
-            debug!("Task status: {status:?}");
-
-            match status.status.as_str() {
-                "SUCCESS" => {
-                    info!("File uploaded successfully");
-                    return Ok(());
-                }
-                "FAILURE" | "REVOKED" => {
-                    error!("Upload failed: {}", status.status);
-                    return Err(crate::paperless::PaperlessError::Io(
-                        std::io::Error::other("Upload task failed"),
-                    ));
-                }
-                _ => {}
-            }
-
-            if now.elapsed() > Duration::from_secs(10) {
-                error!("Timeout waiting for upload");
-                return Err(crate::paperless::PaperlessError::Io(
-                    std::io::Error::new(std::io::ErrorKind::TimedOut, "Upload timeout"),
-                ));
-            }
         }
     }
 
@@ -221,15 +180,9 @@ impl StorageBackend<User> for PaperlessStorage {
         let mut last_err = None;
         for attempt in 0..MAX_UPLOAD_RETRIES {
             match self.paperless_client.upload(&temp_path).await {
-                Ok(task_id) => {
-                    // Poll for task completion
-                    match self.wait_for_task(&task_id).await {
-                        Ok(()) => return Ok(bytes_copied),
-                        Err(e) => {
-                            warn!("Task polling failed on attempt {}: {e}", attempt + 1);
-                            last_err = Some(e);
-                        }
-                    }
+                Ok(_task_id) => {
+                    info!("File uploaded successfully");
+                    return Ok(bytes_copied);
                 }
                 Err(e) => {
                     warn!("Upload attempt {} failed: {e}", attempt + 1);
@@ -291,7 +244,7 @@ impl StorageBackend<User> for PaperlessStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paperless::{PaperlessError, TaskStatus};
+    use crate::paperless::PaperlessError;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Mock that fails N times then succeeds on upload, always succeeds on health_check
@@ -328,11 +281,6 @@ mod tests {
             }
         }
 
-        async fn task_status(&self, _task_id: &str) -> Result<TaskStatus, PaperlessError> {
-            Ok(TaskStatus {
-                status: "SUCCESS".to_string(),
-            })
-        }
     }
 
     /// Mock that always fails upload (for spool testing)
@@ -354,9 +302,6 @@ mod tests {
             )))
         }
 
-        async fn task_status(&self, _task_id: &str) -> Result<TaskStatus, PaperlessError> {
-            unreachable!()
-        }
     }
 
     /// Mock that tracks health_check calls, fails health_check but would succeed upload
@@ -392,11 +337,6 @@ mod tests {
             Ok("test-task-id".to_string())
         }
 
-        async fn task_status(&self, _task_id: &str) -> Result<TaskStatus, PaperlessError> {
-            Ok(TaskStatus {
-                status: "SUCCESS".to_string(),
-            })
-        }
     }
 
     fn make_input(data: &[u8]) -> impl tokio::io::AsyncRead + Send + Sync + Unpin + 'static {

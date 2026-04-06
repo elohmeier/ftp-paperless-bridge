@@ -49,43 +49,9 @@ async fn try_upload_file(
         .to_str()
         .ok_or_else(|| PaperlessError::Io(std::io::Error::other("invalid path")))?;
 
-    let task_id = client.upload(path_str).await?;
-
-    let start = tokio::time::Instant::now();
-    loop {
-        sleep(Duration::from_secs(1)).await;
-
-        let status = match client.task_status(&task_id).await {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to get task status for spooled file: {e}");
-                if start.elapsed() > Duration::from_secs(30) {
-                    return Err(e);
-                }
-                continue;
-            }
-        };
-
-        match status.status.as_str() {
-            "SUCCESS" => {
-                info!("Spooled file uploaded successfully: {}", path.display());
-                return Ok(());
-            }
-            "FAILURE" | "REVOKED" => {
-                return Err(PaperlessError::Io(std::io::Error::other(
-                    "Upload task failed",
-                )));
-            }
-            _ => {}
-        }
-
-        if start.elapsed() > Duration::from_secs(30) {
-            return Err(PaperlessError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Upload timeout",
-            )));
-        }
-    }
+    client.upload(path_str).await?;
+    info!("Spooled file uploaded successfully: {}", path.display());
+    Ok(())
 }
 
 /// Drain the spool directory by uploading all files. Successfully uploaded files are removed.
