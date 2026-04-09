@@ -12,11 +12,15 @@ use std::time::Duration;
 use clap::Parser;
 use color_eyre::eyre::Result;
 use libunftp::options::ActivePassiveMode;
-use log::{error, info};
+use log::{error, info, warn};
 
 use auth::UsernamePasswordAuthenticator;
-use paperless::{PaperlessApi, PaperlessClient};
+use paperless::{PaperlessApi, PaperlessClient, PaperlessError};
 use storage::PaperlessStorage;
+
+const STARTUP_HEALTH_CHECK_MAX_ATTEMPTS: u32 = 5;
+const STARTUP_HEALTH_CHECK_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const STARTUP_HEALTH_CHECK_MAX_BACKOFF: Duration = Duration::from_secs(16);
 
 fn parse_port_range(src: &str) -> Result<RangeInclusive<u16>, String> {
     let parts: Vec<_> = src.split("-").collect();
@@ -43,6 +47,30 @@ fn validate_listen_addr(addr: &str) -> Result<String, String> {
             "Invalid listen address '{}'. Must be in format IP:PORT (e.g., 0.0.0.0:2121 or [::]:2121)",
             addr
         ))
+    }
+}
+
+async fn validate_paperless_connection_with_retry(
+    paperless_client: &dyn PaperlessApi,
+) -> Result<(), PaperlessError> {
+    let mut attempt = 1;
+    let mut backoff = STARTUP_HEALTH_CHECK_INITIAL_BACKOFF;
+
+    loop {
+        match paperless_client.health_check().await {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < STARTUP_HEALTH_CHECK_MAX_ATTEMPTS => {
+                warn!(
+                    "Paperless API health check attempt {attempt}/{} failed: {err}. Retrying in {}s",
+                    STARTUP_HEALTH_CHECK_MAX_ATTEMPTS,
+                    backoff.as_secs()
+                );
+                tokio::time::sleep(backoff).await;
+                attempt += 1;
+                backoff = (backoff * 2).min(STARTUP_HEALTH_CHECK_MAX_BACKOFF);
+            }
+            Err(err) => return Err(err),
+        }
     }
 }
 
@@ -115,7 +143,7 @@ pub async fn main() -> Result<()> {
 
     // Validate API connection at startup
     info!("Validating Paperless API connection...");
-    if let Err(e) = paperless_client.health_check().await {
+    if let Err(e) = validate_paperless_connection_with_retry(paperless_client.as_ref()).await {
         error!("Failed to connect to Paperless API: {e}");
         return Err(color_eyre::eyre::eyre!("Failed to connect to Paperless API: {e}"));
     }

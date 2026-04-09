@@ -1,6 +1,6 @@
 package:
   name: ftp-paperless-bridge
-  version: 0.2.1
+  version: 0.3.2
   epoch: 0
   description: "Present a FTP server to your network-enabled document scanner and forward anything received to paperless-ngx"
   copyright:
