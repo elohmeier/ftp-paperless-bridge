@@ -1,6 +1,10 @@
 use async_trait::async_trait;
 use log::info;
 use reqwest::{Client, multipart};
+use std::time::Duration;
+
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
 pub enum PaperlessError {
@@ -49,7 +53,10 @@ impl PaperlessClient {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(HTTP_CONNECT_TIMEOUT)
+                .build()
+                .expect("failed to build Paperless HTTP client"),
         }
     }
 }
@@ -60,6 +67,7 @@ impl PaperlessApi for PaperlessClient {
         self.client
             .get(format!("{}/api/ui_settings/", self.base_url))
             .header("Authorization", format!("Token {}", self.token))
+            .timeout(HTTP_REQUEST_TIMEOUT)
             .send()
             .await?
             .error_for_status()?;
@@ -82,5 +90,4 @@ impl PaperlessApi for PaperlessClient {
         let uuid = resp.text().await?;
         Ok(uuid.trim_matches('"').to_string())
     }
-
 }

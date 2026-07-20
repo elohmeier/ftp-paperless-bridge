@@ -1,4 +1,5 @@
 mod auth;
+mod health;
 mod paperless;
 pub mod spool;
 mod storage;
@@ -15,12 +16,15 @@ use libunftp::options::ActivePassiveMode;
 use log::{error, info, warn};
 
 use auth::UsernamePasswordAuthenticator;
+use health::{PaperlessHealth, monitor_paperless_health};
 use paperless::{PaperlessApi, PaperlessClient, PaperlessError};
 use storage::PaperlessStorage;
 
 const STARTUP_HEALTH_CHECK_MAX_ATTEMPTS: u32 = 5;
 const STARTUP_HEALTH_CHECK_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const STARTUP_HEALTH_CHECK_MAX_BACKOFF: Duration = Duration::from_secs(16);
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+const HEALTH_STATUS_MAX_AGE: Duration = Duration::from_secs(15);
 
 fn parse_port_range(src: &str) -> Result<RangeInclusive<u16>, String> {
     let parts: Vec<_> = src.split("-").collect();
@@ -145,13 +149,24 @@ pub async fn main() -> Result<()> {
     info!("Validating Paperless API connection...");
     if let Err(e) = validate_paperless_connection_with_retry(paperless_client.as_ref()).await {
         error!("Failed to connect to Paperless API: {e}");
-        return Err(color_eyre::eyre::eyre!("Failed to connect to Paperless API: {e}"));
+        return Err(color_eyre::eyre::eyre!(
+            "Failed to connect to Paperless API: {e}"
+        ));
     }
     info!("Paperless API connection validated");
+
+    let paperless_health = PaperlessHealth::new_healthy(HEALTH_STATUS_MAX_AGE);
+    let health_client = Arc::clone(&paperless_client) as Arc<dyn PaperlessApi>;
+    tokio::spawn(monitor_paperless_health(
+        health_client,
+        paperless_health.clone(),
+        HEALTH_CHECK_INTERVAL,
+    ));
 
     let authenticator = Arc::new(UsernamePasswordAuthenticator::new(
         args.username,
         args.password,
+        paperless_health.clone(),
     ));
 
     let spool_dir = args.spool_dir.clone();
@@ -172,9 +187,9 @@ pub async fn main() -> Result<()> {
     let paperless_storage = Box::new(move || {
         let client = Arc::clone(&paperless_client) as Arc<dyn PaperlessApi>;
         if let Some(ref dir) = spool_dir {
-            PaperlessStorage::new_with_spool(client, dir.clone())
+            PaperlessStorage::new_with_spool(client, paperless_health.clone(), dir.clone())
         } else {
-            PaperlessStorage::new(client)
+            PaperlessStorage::new(client, paperless_health.clone())
         }
     });
 

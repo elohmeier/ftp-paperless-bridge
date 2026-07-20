@@ -6,14 +6,16 @@ use std::time::Duration;
 use async_tempfile::TempFile;
 use async_trait::async_trait;
 use libunftp::storage::{
-    Error as StorageError, ErrorKind::LocalError, Fileinfo, Metadata, Result as StorageResult,
-    StorageBackend,
+    Error as StorageError,
+    ErrorKind::{LocalError, TransientFileNotAvailable},
+    Fileinfo, Metadata, Result as StorageResult, StorageBackend,
 };
 use log::{debug, error, info, warn};
 use tokio::io::AsyncSeekExt;
 use tokio::time::sleep;
 
 use crate::auth::User;
+use crate::health::PaperlessHealth;
 use crate::paperless::PaperlessApi;
 
 const MAX_UPLOAD_RETRIES: usize = 5;
@@ -21,6 +23,7 @@ const INITIAL_RETRY_DELAY_MS: u64 = 500;
 
 pub struct PaperlessStorage {
     paperless_client: Arc<dyn PaperlessApi>,
+    paperless_health: PaperlessHealth,
     spool_dir: Option<PathBuf>,
 }
 
@@ -31,16 +34,22 @@ impl std::fmt::Debug for PaperlessStorage {
 }
 
 impl PaperlessStorage {
-    pub fn new(paperless_client: Arc<dyn PaperlessApi>) -> Self {
+    pub fn new(paperless_client: Arc<dyn PaperlessApi>, paperless_health: PaperlessHealth) -> Self {
         Self {
             paperless_client,
+            paperless_health,
             spool_dir: None,
         }
     }
 
-    pub fn new_with_spool(paperless_client: Arc<dyn PaperlessApi>, spool_dir: PathBuf) -> Self {
+    pub fn new_with_spool(
+        paperless_client: Arc<dyn PaperlessApi>,
+        paperless_health: PaperlessHealth,
+        spool_dir: PathBuf,
+    ) -> Self {
         Self {
             paperless_client,
+            paperless_health,
             spool_dir: Some(spool_dir),
         }
     }
@@ -54,10 +63,7 @@ impl PaperlessStorage {
         if let Some(ref spool_dir) = self.spool_dir {
             match crate::spool::spool_file(Path::new(temp_path), spool_dir).await {
                 Ok(spool_path) => {
-                    info!(
-                        "File spooled for later retry: {}",
-                        spool_path.display()
-                    );
+                    info!("File spooled for later retry: {}", spool_path.display());
                     return Ok(bytes_copied);
                 }
                 Err(spool_err) => {
@@ -148,6 +154,13 @@ impl StorageBackend<User> for PaperlessStorage {
     ) -> StorageResult<u64> {
         info!("Received upload request");
 
+        // A login may have been admitted just before the monitor detected an outage.
+        // Reject before reading document bytes so the scanner gets prompt feedback.
+        if let Err(error) = self.paperless_health.check() {
+            warn!("Rejecting upload because Paperless is unavailable: {error}");
+            return Err(StorageError::new(TransientFileNotAvailable, error));
+        }
+
         // Save to temp file first
         let mut tempfile =
             if let Some(file_name) = path.as_ref().file_name().map(|x| x.to_string_lossy()) {
@@ -172,9 +185,13 @@ impl StorageBackend<User> for PaperlessStorage {
 
         // Pre-upload health check
         if let Err(e) = self.paperless_client.health_check().await {
+            self.paperless_health.mark_unhealthy(&e);
             warn!("Pre-upload health check failed: {e}");
-            return self.handle_upload_failure(&temp_path, e, bytes_copied).await;
+            return self
+                .handle_upload_failure(&temp_path, e, bytes_copied)
+                .await;
         }
+        self.paperless_health.mark_healthy();
 
         // Upload with retry
         let mut last_err = None;
@@ -191,7 +208,8 @@ impl StorageBackend<User> for PaperlessStorage {
             }
 
             if attempt + 1 < MAX_UPLOAD_RETRIES {
-                let delay = Duration::from_millis(INITIAL_RETRY_DELAY_MS * 2u64.pow(attempt as u32));
+                let delay =
+                    Duration::from_millis(INITIAL_RETRY_DELAY_MS * 2u64.pow(attempt as u32));
                 debug!("Retrying in {}ms", delay.as_millis());
                 sleep(delay).await;
             }
@@ -199,7 +217,8 @@ impl StorageBackend<User> for PaperlessStorage {
 
         let err = last_err.unwrap();
         error!("Upload failed after {MAX_UPLOAD_RETRIES} attempts: {err}");
-        self.handle_upload_failure(&temp_path, err, bytes_copied).await
+        self.handle_upload_failure(&temp_path, err, bytes_copied)
+            .await
     }
 
     async fn del<P: AsRef<Path> + Send + Debug>(
@@ -247,6 +266,10 @@ mod tests {
     use crate::paperless::PaperlessError;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    fn healthy_status() -> PaperlessHealth {
+        PaperlessHealth::new_healthy(Duration::from_secs(60))
+    }
+
     /// Mock that fails N times then succeeds on upload, always succeeds on health_check
     struct RetryMockClient {
         fail_count: AtomicUsize,
@@ -272,15 +295,13 @@ mod tests {
             self.fail_count.fetch_add(1, Ordering::SeqCst);
             let remaining = self.failures_remaining.fetch_sub(1, Ordering::SeqCst);
             if remaining > 0 {
-                Err(PaperlessError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                Err(PaperlessError::Io(std::io::Error::other(
                     "dns error: Name does not resolve",
                 )))
             } else {
                 Ok("test-task-id".to_string())
             }
         }
-
     }
 
     /// Mock that always fails upload (for spool testing)
@@ -289,19 +310,16 @@ mod tests {
     #[async_trait]
     impl PaperlessApi for AlwaysFailClient {
         async fn health_check(&self) -> Result<(), PaperlessError> {
-            Err(PaperlessError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Err(PaperlessError::Io(std::io::Error::other(
                 "dns error: Name does not resolve",
             )))
         }
 
         async fn upload(&self, _path: &str) -> Result<String, PaperlessError> {
-            Err(PaperlessError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Err(PaperlessError::Io(std::io::Error::other(
                 "dns error: Name does not resolve",
             )))
         }
-
     }
 
     /// Mock that tracks health_check calls, fails health_check but would succeed upload
@@ -324,10 +342,7 @@ mod tests {
         async fn health_check(&self) -> Result<(), PaperlessError> {
             self.health_check_count.fetch_add(1, Ordering::SeqCst);
             if self.health_check_fails {
-                Err(PaperlessError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "dns error",
-                )))
+                Err(PaperlessError::Io(std::io::Error::other("dns error")))
             } else {
                 Ok(())
             }
@@ -336,7 +351,6 @@ mod tests {
         async fn upload(&self, _path: &str) -> Result<String, PaperlessError> {
             Ok("test-task-id".to_string())
         }
-
     }
 
     fn make_input(data: &[u8]) -> impl tokio::io::AsyncRead + Send + Sync + Unpin + 'static {
@@ -349,12 +363,10 @@ mod tests {
     async fn test_upload_retries_on_transient_error_then_succeeds() {
         // Upload fails twice then succeeds on third attempt
         let client = Arc::new(RetryMockClient::new(2));
-        let storage = PaperlessStorage::new(client.clone());
+        let storage = PaperlessStorage::new(client.clone(), healthy_status());
 
         let input = make_input(b"test pdf content");
-        let result = storage
-            .put(&User, input, Path::new("/test.pdf"), 0)
-            .await;
+        let result = storage.put(&User, input, Path::new("/test.pdf"), 0).await;
 
         assert!(result.is_ok(), "Upload should succeed after retries");
         // Should have been called 3 times (2 failures + 1 success)
@@ -365,12 +377,10 @@ mod tests {
     async fn test_upload_gives_up_after_max_retries() {
         // Upload always fails - should give up after max retries, not retry forever
         let client = Arc::new(RetryMockClient::new(100));
-        let storage = PaperlessStorage::new(client.clone());
+        let storage = PaperlessStorage::new(client.clone(), healthy_status());
 
         let input = make_input(b"test pdf content");
-        let result = storage
-            .put(&User, input, Path::new("/test.pdf"), 0)
-            .await;
+        let result = storage.put(&User, input, Path::new("/test.pdf"), 0).await;
 
         assert!(result.is_err(), "Upload should fail after max retries");
         let attempts = client.fail_count.load(Ordering::SeqCst);
@@ -387,12 +397,10 @@ mod tests {
     async fn test_health_check_called_before_upload() {
         // Health check passes - upload should proceed
         let client = Arc::new(HealthCheckTrackingClient::new(false));
-        let storage = PaperlessStorage::new(client.clone());
+        let storage = PaperlessStorage::new(client.clone(), healthy_status());
 
         let input = make_input(b"test pdf content");
-        let result = storage
-            .put(&User, input, Path::new("/test.pdf"), 0)
-            .await;
+        let result = storage.put(&User, input, Path::new("/test.pdf"), 0).await;
 
         assert!(result.is_ok());
         assert!(
@@ -405,15 +413,37 @@ mod tests {
     async fn test_upload_rejected_when_health_check_fails() {
         // Health check fails - upload should be rejected early without attempting upload
         let client = Arc::new(HealthCheckTrackingClient::new(true));
-        let storage = PaperlessStorage::new(client.clone());
+        let storage = PaperlessStorage::new(client.clone(), healthy_status());
 
         let input = make_input(b"test pdf content");
-        let result = storage
-            .put(&User, input, Path::new("/test.pdf"), 0)
-            .await;
+        let result = storage.put(&User, input, Path::new("/test.pdf"), 0).await;
 
         // Should fail because health check failed (after retries)
-        assert!(result.is_err(), "Upload should be rejected when health check fails");
+        assert!(
+            result.is_err(),
+            "Upload should be rejected when health check fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upload_rejected_immediately_when_cached_health_is_unhealthy() {
+        let client = Arc::new(HealthCheckTrackingClient::new(false));
+        let health = healthy_status();
+        health.mark_unhealthy("Paperless is unreachable");
+        let storage = PaperlessStorage::new(client.clone(), health);
+
+        let result = storage
+            .put(
+                &User,
+                make_input(b"test pdf content"),
+                Path::new("/test.pdf"),
+                0,
+            )
+            .await;
+
+        let error = result.expect_err("upload should be rejected");
+        assert_eq!(error.kind(), TransientFileNotAvailable);
+        assert_eq!(client.health_check_count.load(Ordering::SeqCst), 0);
     }
 
     // === Feature 3: Spool to disk on failure ===
@@ -422,7 +452,11 @@ mod tests {
     async fn test_file_spooled_to_disk_on_upload_failure() {
         let spool_dir = tempfile::tempdir().unwrap();
         let client = Arc::new(AlwaysFailClient);
-        let storage = PaperlessStorage::new_with_spool(client, spool_dir.path().to_path_buf());
+        let storage = PaperlessStorage::new_with_spool(
+            client,
+            healthy_status(),
+            spool_dir.path().to_path_buf(),
+        );
 
         let input = make_input(b"test pdf content");
         // put should succeed (from FTP client's perspective) because file is spooled
@@ -437,9 +471,7 @@ mod tests {
         );
 
         // Verify the file was saved to the spool directory
-        let spool_files: Vec<_> = std::fs::read_dir(spool_dir.path())
-            .unwrap()
-            .collect();
+        let spool_files: Vec<_> = std::fs::read_dir(spool_dir.path()).unwrap().collect();
         assert_eq!(
             spool_files.len(),
             1,
@@ -453,7 +485,11 @@ mod tests {
 
         // First, spool a file with a failing client
         let client = Arc::new(AlwaysFailClient);
-        let storage = PaperlessStorage::new_with_spool(client, spool_dir.path().to_path_buf());
+        let storage = PaperlessStorage::new_with_spool(
+            client,
+            healthy_status(),
+            spool_dir.path().to_path_buf(),
+        );
 
         let input = make_input(b"test pdf content");
         storage
@@ -470,7 +506,7 @@ mod tests {
 
         // Now create a working client and run the spool drain
         let working_client: Arc<dyn PaperlessApi> = Arc::new(RetryMockClient::new(0));
-        crate::spool::drain_spool(&spool_dir.path().to_path_buf(), working_client.as_ref())
+        crate::spool::drain_spool(spool_dir.path(), working_client.as_ref())
             .await
             .unwrap();
 

@@ -41,10 +41,7 @@ pub async fn spool_file(source: &Path, spool_dir: &Path) -> Result<PathBuf, std:
 }
 
 /// Try to upload a single file, returning Ok if it succeeds.
-async fn try_upload_file(
-    path: &Path,
-    client: &dyn PaperlessApi,
-) -> Result<(), PaperlessError> {
+async fn try_upload_file(path: &Path, client: &dyn PaperlessApi) -> Result<(), PaperlessError> {
     let path_str = path
         .to_str()
         .ok_or_else(|| PaperlessError::Io(std::io::Error::other("invalid path")))?;
@@ -71,7 +68,10 @@ pub async fn drain_spool(
         match try_upload_file(&path, client).await {
             Ok(()) => {
                 std::fs::remove_file(&path)?;
-                info!("Removed spooled file after successful upload: {}", path.display());
+                info!(
+                    "Removed spooled file after successful upload: {}",
+                    path.display()
+                );
             }
             Err(e) => {
                 warn!(
